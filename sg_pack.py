@@ -19,6 +19,11 @@
     PREFER_COUNTRIES   出口地区优先顺序 (默认 SG,JP)
     TOP_N              每个地区取几个最快节点 (默认 1)
     MAX_HOSTS          最多用多少个入口IP (默认 20)
+    NAME_INDEX         备注是否带 -01 序号，0=去掉，其余=保留 (默认 1)
+    SELF_URL           上一轮发布的 nodes.txt 地址，用来读取当前出口
+    STICKY             1=出口尽量固定、失效才换，0=每轮都重新挑 (默认 1)
+    SLOW_RATIO         当前出口比本轮最快慢多少倍才换 (默认 1.5)
+    SLOW_MIN_DIFF      再叠加一个绝对差值门槛，单位毫秒 (默认 100)
 """
 import json
 import os
@@ -43,6 +48,14 @@ PREFER = [
 ]
 TOP_N = max(1, int(os.environ.get("TOP_N", "1")))
 MAX_HOSTS = max(1, int(os.environ.get("MAX_HOSTS", "20")))
+# 备注里是否带 -01/-02 序号；默认保留，设成 0 去掉
+NAME_INDEX = os.environ.get("NAME_INDEX", "1").strip() != "0"
+# 上一轮发布的 nodes.txt 地址，用来实现“出口尽量固定，失效才换”
+SELF_URL = os.environ.get("SELF_URL", "").strip()
+STICKY = os.environ.get("STICKY", "1").strip() != "0"
+# 当前出口比本轮最快慢多少才值得换：倍数 + 绝对差值，两个条件同时满足才换
+SLOW_RATIO = float(os.environ.get("SLOW_RATIO", "1.5"))
+SLOW_MIN_DIFF = float(os.environ.get("SLOW_MIN_DIFF", "100"))
 
 COUNTRY_ZH = {
     "SG": "新加坡", "JP": "日本", "MY": "马来西亚", "TH": "泰国", "VN": "越南",
@@ -108,6 +121,82 @@ def pick_nodes(available):
     return [], None
 
 
+def previous_exit():
+    """从上一轮发布的 nodes.txt 里取出当前出口，如 sstp://vpn:vpn@host:port"""
+    if not SELF_URL:
+        return None
+    try:
+        resp = requests.get(
+            SELF_URL,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0 (gate-pack)", "Cache-Control": "no-cache"},
+        )
+        if resp.status_code != 200:
+            log(f"[sticky] 读取上一轮 nodes.txt 失败: HTTP {resp.status_code}")
+            return None
+        for line in resp.text.splitlines():
+            if "$" in line:
+                link = line.split("$", 1)[1].strip()
+                if link.startswith("sstp://") and "@" in link:
+                    return link
+    except Exception as exc:
+        log(f"[sticky] 读取上一轮 nodes.txt 异常: {type(exc).__name__}: {exc}")
+    return None
+
+
+def _latency(n):
+    v = n.get("latency_ms")
+    return v if isinstance(v, (int, float)) else None
+
+
+def _should_switch(cur, best):
+    """当前出口比本轮最快慢 SLOW_RATIO 倍、且差值超过 SLOW_MIN_DIFF 才换。"""
+    c, b = _latency(cur), _latency(best)
+    if c is None or b is None:
+        return False
+    return c > b * SLOW_RATIO and (c - b) >= SLOW_MIN_DIFF
+
+
+def choose_exit(available):
+    """出口尽量固定：失效才换；或者明显变慢（超过阈值）才换。"""
+    if not STICKY:
+        picked, country = pick_nodes(available)
+        return picked, country, False
+
+    prev = previous_exit()
+    if prev:
+        key = prev.rsplit("@", 1)[-1]
+        cur = next(
+            (n for n in available if f"{n.get('host')}:{n.get('port')}" == key),
+            None,
+        )
+        if cur is None:
+            log(f"[sticky] 上一轮出口 {key} 已失效，重新挑选")
+        else:
+            cur_code = str(cur.get("country_code") or "").upper()
+            # 比较对象 = 本轮真正会切过去的那个节点（SG 优先，其次 JP），
+            # 而不是 SG/JP 并集里的最快，避免“比较对象”和“切换目标”不是同一台。
+            targets, target_country = pick_nodes(available)
+            best = targets[0] if targets else None
+
+            if best is None:
+                log("[sticky] 本轮没有 SG/JP 节点，继续沿用当前出口")
+                return [cur], cur_code, True
+            if cur_code not in PREFER:
+                log(f"[sticky] 当前出口 {cur_code} 不在偏好地区 {PREFER}，切换")
+            elif _should_switch(cur, best):
+                log(
+                    f"[sticky] 当前出口 {_latency(cur)}ms 比本轮最优 {_latency(best)}ms 慢太多"
+                    f"（>{SLOW_RATIO}x 且差>{SLOW_MIN_DIFF}ms），切换"
+                )
+            else:
+                log(f"[sticky] 沿用上一轮出口 {key}（{_latency(cur)}ms，仍可接受）")
+                return [cur], cur_code, True
+
+    picked, country = pick_nodes(available)
+    return picked, country, False
+
+
 def main():
     if not os.path.exists(DATA_PATH):
         sys.exit(f"找不到 {DATA_PATH}，请先成功运行 vpngate.py")
@@ -123,7 +212,7 @@ def main():
         log("[hosts] 没拿到优选IP，保留 vpngate.py 生成的原始 nodes.txt（本次不重写）")
         return
 
-    picked, country = pick_nodes(available)
+    picked, country, kept = choose_exit(available)
 
     if not picked:
         with open(OUT_PATH, "w", encoding="utf-8") as f:
@@ -136,9 +225,11 @@ def main():
     for n in picked:
         kind = "住宅" if n.get("residential") == "residential" else "机房"
         link = n.get("link") or f"sstp://vpn:vpn@{n['host']}:{n['port']}"
-        log(f"[pick] {country} {n.get('host')}:{n.get('port')} 延迟={n.get('latency_ms')}ms -> {link}")
+        tag = "沿用" if kept else "新选"
+        log(f"[exit] {tag} {country} {n.get('host')}:{n.get('port')} 延迟={n.get('latency_ms')}ms -> {link}")
         for h in hosts:
-            lines.append(f"{h}#{zh}-{kind}-{len(lines) + 1:02d}${link}")
+            suffix = f"-{len(lines) + 1:02d}" if NAME_INDEX else ""
+            lines.append(f"{h}#{zh}-{kind}{suffix}${link}")
 
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

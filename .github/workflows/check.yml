@@ -44,7 +44,12 @@ jobs:
           PREFER_COUNTRIES: "SG,JP"
           TOP_N: "1"
           MAX_HOSTS: "200"  #最大条目数 超过截断
-
+          NAME_INDEX: "0"  #备注是否带 -01 序号，1=带，0=不带 (默认 0)
+          SELF_URL: "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/nodes.txt"
+          STICKY: "1"
+          SLOW_RATIO: "2"
+          SLOW_MIN_DIFF: "250"
+          
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
