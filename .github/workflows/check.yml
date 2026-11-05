@@ -43,7 +43,7 @@ jobs:
           HOSTS_URL: "https://raw.githubusercontent.com/meishero/cf-bestip/main/best_ip_v6_yidong.txt"
           PREFER_COUNTRIES: "SG,JP"
           TOP_N: "1"
-          MAX_HOSTS: "20"
+          MAX_HOSTS: "200"  #最大条目数 超过截断
 
       - uses: actions/configure-pages@v5
 
