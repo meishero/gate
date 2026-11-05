@@ -2,7 +2,7 @@ name: VPN Gate Node Check
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "3,33 * * * *" 
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
