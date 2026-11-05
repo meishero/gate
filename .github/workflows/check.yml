@@ -2,8 +2,7 @@ name: VPN Gate Node Check
 
 on:
   schedule:
-    # 每 20 分钟一次（GitHub 可能延迟几分钟；仓库 60 天无提交会自动停用 schedule）
-    - cron: "*/20 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -23,62 +22,26 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      # 默认用 cmliu 的公益检测实例；想换成自己的，在
-      # Settings → Secrets and variables → Actions 里加 CHECK_WORKER 覆盖即可。
-      - name: Show check worker
-        env:
-          CHECK_WORKER: ${{ secrets.CHECK_WORKER || 'https://check.socks5.cmliussss.net/check?sstp=vpn:vpn@' }}
-        run: echo "使用检测 Worker: $CHECK_WORKER"
-
-      - name: Get VPN Gate nodes + check via Cloudflare Worker + build page
+      - name: Run checker
         run: python vpngate.py
         env:
-          CHECK_WORKER: ${{ secrets.CHECK_WORKER || 'https://check.socks5.cmliussss.net/check?sstp=vpn:vpn@' }}
+          CHECK_WORKER: "https://check.socks5.cmliussss.net/check?sstp=vpn:vpn@"
           CHECK_CONCURRENCY: "16"
           CHECK_TIMEOUT: "60"
-          NODES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/nodes.txt
 
-      - name: Ensure GitHub Pages is enabled (one-time auto setup)
-        run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/pages")
-          echo "Pages API status: $code"
-          if [ "$code" = "404" ]; then
-            echo "首次运行: 启用 GitHub Pages (source = GitHub Actions)"
-            curl -sS -X PUT \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{"build_type":"workflow","source":{"branches":["main"],"path":"/public"}}' \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/pages"
-            echo
-            sleep 10
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/configure-pages@v5
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
-          path: 'public'
+          path: public
 
-      - name: Deploy to GitHub Pages
+      - uses: actions/deploy-pages@v4
         id: deployment
-        uses: actions/deploy-pages@v4
-
-      - name: Show site URL
-        run: 'echo "nodes.txt: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/nodes.txt"'
