@@ -37,6 +37,14 @@ jobs:
           CHECK_CONCURRENCY: "16"
           CHECK_TIMEOUT: "60"
 
+      - name: Repack nodes.txt (my hosts + fastest SG/JP)
+        run: python sg_pack.py
+        env:
+          HOSTS_URL: "https://raw.githubusercontent.com/meishero/cf-bestip/main/best_ip_v6_yidong.txt"
+          PREFER_COUNTRIES: "SG,JP"
+          TOP_N: "1"
+          MAX_HOSTS: "20"
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
